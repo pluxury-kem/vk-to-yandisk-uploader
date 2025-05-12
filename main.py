@@ -11,7 +11,7 @@ class VK:
         }
         self.base = 'https://api.vk.com/method/'
 
-    def get_photos(self, owner_id, count=5):
+    def get_photos(self, owner_id, count):
         url = f'{self.base}photos.get'
         params = {
             'user_id': owner_id,
@@ -30,12 +30,18 @@ class VK:
             raise Exception(f"VK API error: {data['error']['error_msg']}")
 
         photo_result = []
+        used_names = set()
+
         for photo in data['response']['items']:
             max_size = max(photo['sizes'], key=lambda s: s['width'] * s['height'])
             file_name = f"{photo['likes']['count']}.jpg"
+            if file_name in used_names:
+                file_name = f"{photo['likes']['count']}_{photo['date']}.jpg"
+            used_names.add(file_name)
             photo_result.append({
                 'file_name': file_name,
-                'size_type': max_size['type']
+                'size_type': max_size['type'],
+                'file_url': max_size['url']
             })
 
         return photo_result
@@ -62,7 +68,7 @@ class YD:
             print(f"Ошибка {response.status_code}: не удалось создать папку ;(")
         return response.status_code
 
-    def upload_file(self, disk_path):
+    def upload_file(self, file_url, disk_path):
         url = f'{self.base}resources/upload'
         headers = {
             'Authorization': f'OAuth {self.token}'
@@ -70,12 +76,26 @@ class YD:
         params = {
             'path': disk_path
         }
-        response = requests.post(url, headers=headers, params=params)
-        if response.status_code in [201, 202]:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"Ошибка загрузки '{disk_path}': {response.status_code}")
+            return
+
+        upload_url = response.json().get('href')
+        if not upload_url:
+            print(f"Ссылка для загрузки не получена для '{disk_path}'")
+            return
+
+        photo_data = requests.get(file_url)
+        if photo_data.status_code != 200:
+            print(f'Ошибка при скачивании фото с VK: {file_url}')
+            return
+
+        upload_response = requests.put(upload_url, data=photo_data.content)
+        if upload_response.status_code in [201, 202]:
             print(f'Загружено: {disk_path}')
         else:
-            print(f"Ошибка загрузки '{disk_path}': {response.status_code}")
-        return response.status_code
+            print(f"Ошибка загрузки '{disk_path}': {upload_response.status_code}")
 
 def read_config(path):
     config = configparser.ConfigParser()
@@ -92,8 +112,8 @@ if __name__ == '__main__':
     vk_token = config['Tokens']['vk_token']
     yd_token = config['Tokens']['yd_token']
 
-    vk = VK(config['Tokens']['vk_token'])
-    yd = YD(config['Tokens']['yd_token'])
+    vk = VK(vk_token)
+    yd = YD(yd_token)
 
     user_id = 158393031
 
@@ -104,8 +124,9 @@ if __name__ == '__main__':
 
     for photo in tqdm(photos, desc='Загрузка фото на Яндекс.Диск:'):
         file_name = photo['file_name']
+        file_url = photo['file_url']
         disk_path = f'{folder_name}/{file_name}'
-        yd.upload_file(disk_path)
+        yd.upload_file(file_url, disk_path)
 
     save_to_json(
         [{'file_name': p['file_name'], 'size': p['size_type']} for p in photos]
